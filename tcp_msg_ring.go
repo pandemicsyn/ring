@@ -42,6 +42,7 @@ type TCPMsgRing struct {
 	conns               map[string]*ringConn
 	schan               chan bool
 	wg                  *sync.WaitGroup
+	halting             bool
 }
 
 func NewTCPMsgRing(r Ring) *TCPMsgRing {
@@ -55,6 +56,7 @@ func NewTCPMsgRing(r Ring) *TCPMsgRing {
 		interMessageTimeout: 2 * time.Hour,
 		schan:               make(chan bool),
 		wg:                  &sync.WaitGroup{},
+		halting:             false,
 	}
 	m.wg.Add(1)
 	return m
@@ -90,6 +92,10 @@ func (m *TCPMsgRing) MsgToNode(nodeID uint64, msg Msg) {
 
 func (m *TCPMsgRing) connection(addr string) *ringConn {
 	m.lock.RLock()
+	if m.halting {
+		m.lock.RUnlock()
+		return nil
+	}
 	conn := m.conns[addr]
 	m.lock.RUnlock()
 	if conn == nil {
@@ -280,7 +286,10 @@ func (m *TCPMsgRing) handleForever(conn *ringConn) {
 }
 
 func (m *TCPMsgRing) Stop() {
+	m.lock.Lock()
+	m.halting = true
 	close(m.schan)
+	m.lock.Unlock()
 	m.wg.Wait()
 }
 
