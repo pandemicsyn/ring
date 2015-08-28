@@ -40,10 +40,12 @@ type TCPMsgRing struct {
 	ring                Ring
 	msgHandlers         map[uint64]MsgUnmarshaller
 	conns               map[string]*ringConn
+	schan               chan bool
+	wg                  *sync.WaitGroup
 }
 
 func NewTCPMsgRing(r Ring) *TCPMsgRing {
-	return &TCPMsgRing{
+	m := &TCPMsgRing{
 		ring:                r,
 		msgHandlers:         make(map[uint64]MsgUnmarshaller),
 		conns:               make(map[string]*ringConn),
@@ -51,7 +53,11 @@ func NewTCPMsgRing(r Ring) *TCPMsgRing {
 		connectionTimeout:   60 * time.Second,
 		intraMessageTimeout: 2 * time.Second,
 		interMessageTimeout: 2 * time.Hour,
+		schan:               make(chan bool),
+		wg:                  &sync.WaitGroup{},
 	}
+	m.wg.Add(1)
+	return m
 }
 
 func (m *TCPMsgRing) Ring() Ring {
@@ -256,13 +262,26 @@ func (m *TCPMsgRing) handleOne(conn *ringConn) error {
 }
 
 func (m *TCPMsgRing) handleForever(conn *ringConn) {
+	m.wg.Add(1)
+	defer m.wg.Done()
 	for {
+		select {
+		case <-m.schan:
+			log.Println("disconnecting", conn.conn.RemoteAddr())
+			return
+		default:
+		}
 		if err := m.handleOne(conn); err != nil {
 			log.Println("handleForever error:", err)
 			m.disconnection(conn.addr)
 			break
 		}
 	}
+}
+
+func (m *TCPMsgRing) Stop() {
+	close(m.schan)
+	m.wg.Wait()
 }
 
 func (m *TCPMsgRing) Listen() error {
@@ -276,8 +295,20 @@ func (m *TCPMsgRing) Listen() error {
 		return err
 	}
 	for {
+		select {
+		case <-m.schan:
+			log.Println("stopping listening on", server.Addr())
+			server.Close()
+			return nil
+		default:
+		}
+		server.SetDeadline(time.Now().Add(1 * time.Second))
 		tcpconn, err := server.AcceptTCP()
 		if err != nil {
+			//if its just the deadline triggering we're cool
+			if opErr, ok := err.(*net.OpError); ok && opErr.Timeout() {
+				continue
+			}
 			log.Println("Listen/AcceptTCP error:", err)
 			server.Close()
 			return err
@@ -300,6 +331,7 @@ func (m *TCPMsgRing) Listen() error {
 		go func() {
 			m.handshake(conn)
 			go m.handleForever(conn)
+			//m.wg.Add(1)
 		}()
 	}
 }
