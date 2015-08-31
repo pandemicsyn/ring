@@ -340,7 +340,6 @@ func (m *TCPMsgRing) Listen() error {
 		go func() {
 			m.handshake(conn)
 			go m.handleForever(conn)
-			//m.wg.Add(1)
 		}()
 	}
 }
